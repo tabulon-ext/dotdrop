@@ -1,132 +1,108 @@
 #!/usr/bin/env bash
 # author: jtt9340 (https://github.com/jtt9340)
+# author: deadc0de6
 #
 # test install negative ignore absolute/relative
 # returns 1 in case of error
 #
 
 # exit on first error
-#set -e
+#set -eu -o errtrace -o pipefail
 
-# all this crap to get current path
-if [ $(uname) = Darwin ]; then
-  # Unfortunately, readlink works differently on macOS than it does on GNU/Linux
-  # (the -f option behaves differently) and the realpath command does not exist.
-  # Workarounds I find on the Internet suggest just using Homebrew to install coreutils
-  # so you can get the GNU coreutils on your Mac. But, I don't want this script to
-  # assume (a) users have Homebrew installed and (b) if they have Homebrew installed, that
-  # they then installed the GNU coreutils.
-  readlink() {
-    TARGET_FILE=$1
-
-    cd `dirname $TARGET_FILE`
-    TARGET_FILE=`basename $TARGET_FILE`
-
-    # Iterate down a (possible) chain of symlinks
-    while [ -L "$TARGET_FILE" ]; do
-      TARGET_FILE=`readlink $TARGET_FILE`
-      cd `dirname $TARGET_FILE`
-      TARGET_FILE=`basename $TARGET_FILE`
-    done
-
-    # Compute the canonicalized name by finding the physical path
-    # for the directory we're in and appending the target file.
-    PHYS_DIR=`pwd -P`
-    RESULT=$PHYS_DIR/$TARGET_FILE
-    echo $RESULT
-  }
-  rl="readlink"
-else
-  rl="readlink -f"
-  if ! ${rl} "${0}" >/dev/null 2>&1; then
-    rl="realpath"
-
-    if ! hash ${rl}; then
-      echo "\"${rl}\" not found !" && exit 1
-    fi
-  fi
-fi
-cur=$(dirname "$(${rl} "${0}")")
+cur=$(cd "$(dirname "${0}")" && pwd)
 
 # dotdrop path can be pass as argument
 ddpath="${cur}/../"
 [ -n "${1}" ] && ddpath="${1}"
-[ ! -d ${ddpath} ] && echo "ddpath \"${ddpath}\" is not a directory" && exit 1
+[ ! -d "${ddpath}" ] && echo "ddpath \"${ddpath}\" is not a directory" && exit 1
 
-export PYTHONPATH="${ddpath}:${PYTHONPATH}"
+PPATH="{PYTHONPATH:-}"
+export PYTHONPATH="${ddpath}:${PPATH}"
 bin="python3 -m dotdrop.dotdrop"
 
 echo "dotdrop path: ${ddpath}"
 echo "pythonpath: ${PYTHONPATH}"
 
 # get the helpers
-source ${cur}/helpers
+# shellcheck source=tests-ng/helpers
+source "${cur}"/helpers
 
-echo -e "$(tput setaf 6)==> RUNNING $(basename $BASH_SOURCE) <==$(tput sgr0)"
+echo -e "$(tput setaf 6)==> RUNNING $(basename "${BASH_SOURCE[0]}") <==$(tput sgr0)"
 
 ################################################################
 # this is the test
 ################################################################
 
 # dotdrop directory
-basedir=`mktemp -d --suffix='-dotdrop-tests' 2>/dev/null || mktemp -d`
+basedir=$(mktemp -d --suffix='-dotdrop-tests' 2>/dev/null || mktemp -d)
 echo "[+] dotdrop dir: ${basedir}"
 echo "[+] dotpath dir: ${basedir}/dotfiles"
 
 # the dotfile to be imported
-tmpd=`mktemp -d --suffix='-dotdrop-tests' 2>/dev/null || mktemp -d`
+tmpd=$(mktemp -d --suffix='-dotdrop-tests' 2>/dev/null || mktemp -d)
+
+clear_on_exit "${basedir}"
+clear_on_exit "${tmpd}"
 
 # some files
-mkdir -p ${tmpd}/program/ignore_me
-echo "some data" > ${tmpd}/program/a
-echo "some data" > ${tmpd}/program/ignore_me/b
-echo "some data" > ${tmpd}/program/ignore_me/c
+mkdir -p "${tmpd}"/program/ignore_me
+echo "data1" > "${tmpd}"/program/a
+echo "data2" > "${tmpd}"/program/ignore_me/b
+echo "data3" > "${tmpd}"/program/ignore_me/c
 
 # create the config file
 cfg="${basedir}/config.yaml"
-create_conf ${cfg} # sets token
+create_conf "${cfg}" # sets token
 
 # import
 echo "[+] import"
-cd ${ddpath} | ${bin} import -f -c ${cfg} ${tmpd}/program
+cd "${ddpath}" | ${bin} import -f -c "${cfg}" "${tmpd}"/program
 
 # make some changes to generate a diff
-echo "some other data" > ${tmpd}/program/a
-echo "some other data" > ${tmpd}/program/ignore_me/b
-echo "some other data" > ${tmpd}/program/ignore_me/c
+echo "changed1" > "${tmpd}"/program/a
+echo "changed1" > "${tmpd}"/program/ignore_me/b
+echo "changed1" > "${tmpd}"/program/ignore_me/c
 
-echo "[+] comparing normal - 3 diffs"
+echo "[+] comparing normal - 3 diffs expected"
 set +e
-cd ${ddpath} | ${bin} compare -c ${cfg} --verbose
+cd "${ddpath}" | ${bin} compare -c "${cfg}" --verbose
 [ "$?" = 0 ] && exit 1 # We don't want an exit status of 0
+cnt=$(cd "${ddpath}" | ${bin} compare -c "${cfg}" | grep '^=> diff' | wc -l)
 set -e
+
+[ "${cnt}" != "3" ] && echo "bad number of diff: ${cnt}/3" && exit 1
 
 # expects two diffs
 patt0="*/ignore_me/*"
 patt1="!*/ignore_me/c"
-echo "[+] comparing with ignore (patterns: ${patt0} and ${patt1}) - 2 diffs"
+echo "[+] comparing with ignore (patterns: ${patt0} and ${patt1}) - 2 diffs expected"
 set +e
-cd ${ddpath} | ${bin} compare -c ${cfg} --verbose --ignore=${patt0} --ignore=${patt1}
+cd "${ddpath}" | ${bin} compare -c "${cfg}" --verbose --ignore="${patt0}" --ignore="${patt1}"
 [ "$?" = "0" ] && exit 1
+cnt=$(cd "${ddpath}" | ${bin} compare -c "${cfg}" --ignore="${patt0}" --ignore="${patt1}" | grep '^=> diff' | wc -l)
 set -e
+
+[ "${cnt}" != "2" ] && echo "bad number of diff: ${cnt}/2" && exit 1
+
 
 # Adding ignore in dotfile
 cfg2="${basedir}/config2.yaml"
+# shellcheck disable=SC1004
 sed '/d_program:/a\
 \ \ \ \ cmpignore:\
 \ \ \ \ - "*/ignore_me/*"\
 \ \ \ \ - "!*/ignore_me/c"
-' ${cfg} > ${cfg2}
+' "${cfg}" > "${cfg2}"
 
 # still expects two diffs
-echo "[+] comparing with ignore in dotfile - 2 diffs"
+echo "[+] comparing with ignore in dotfile - 2 diffs expected"
 set +e
-cd ${ddpath} | ${bin} compare -c ${cfg2} --verbose
+cd "${ddpath}" | ${bin} compare -c "${cfg2}" --verbose
 [ "$?" = "0" ] && exit 1
+cnt=$(cd "${ddpath}" | ${bin} compare -c "${cfg2}" | grep '^=> diff' | wc -l)
 set -e
 
-# clean
-rm -rf ${basedir} ${tmpd}
+[ "${cnt}" != "2" ] && echo "bad number of diff: ${cnt}/2" && exit 1
 
 echo "OK"
 exit 0

@@ -14,24 +14,25 @@ class Dotfile(DictParser):
     """Represent a dotfile."""
     # dotfile keys
     key_noempty = 'ignoreempty'
-    key_trans_r = 'trans_read'
-    key_trans_w = 'trans_write'
+    key_trans_install = 'trans_install'
+    key_trans_update = 'trans_update'
     key_template = 'template'
+    key_dir_as_block = 'dir_as_block'
 
     def __init__(self, key, dst, src,
-                 actions=None, trans_r=None, trans_w=None,
+                 actions=None, trans_install=None, trans_update=None,
                  link=LinkTypes.NOLINK, noempty=False,
                  cmpignore=None, upignore=None,
                  instignore=None, template=True, chmod=None,
-                 ignore_missing_in_dotdrop=False):
+                 ignore_missing_in_dotdrop=False, dir_as_block=None):
         """
         constructor
         @key: dotfile key
         @dst: dotfile dst (in user's home usually)
         @src: dotfile src (in dotpath)
         @actions: dictionary of actions to execute for this dotfile
-        @trans_r: transformation to change dotfile before it is installed
-        @trans_w: transformation to change dotfile before updating it
+        @trans_install: transformation to change dotfile before it is installed
+        @trans_update: transformation to change dotfile before updating it
         @link: link behavior
         @noempty: ignore empty template if True
         @upignore: patterns to ignore when updating
@@ -39,6 +40,7 @@ class Dotfile(DictParser):
         @instignore: patterns to ignore when installing
         @template: template this dotfile
         @chmod: file permission
+        @dir_as_block: handle directory matching patterns as a single block
         """
         self.actions = actions or []
         self.dst = dst
@@ -46,26 +48,26 @@ class Dotfile(DictParser):
         self.link = LinkTypes.get(link)
         self.noempty = noempty
         self.src = src
-        self.trans_r = trans_r
-        self.trans_w = trans_w
+        self.trans_install = trans_install
+        self.trans_update = trans_update
         self.upignore = upignore or []
         self.cmpignore = cmpignore or []
         self.instignore = instignore or []
         self.template = template
         self.chmod = chmod
         self.ignore_missing_in_dotdrop = ignore_missing_in_dotdrop
+        self.dir_as_block = dir_as_block or []
 
         if self.link != LinkTypes.NOLINK and \
                 (
-                    (trans_r and len(trans_r) > 0)
-                    or
-                    (trans_w and len(trans_w) > 0)
+                    (trans_install and len(trans_install) > 0) or
+                    (trans_update and len(trans_update) > 0)
                 ):
-            msg = '[{}] transformations disabled'.format(key)
+            msg = f'[{key}] transformations disabled'
             msg += ' because dotfile is linked'
             self.log.warn(msg)
-            self.trans_r = []
-            self.trans_w = []
+            self.trans_install = []
+            self.trans_update = []
 
     def get_dotfile_variables(self):
         """return this dotfile specific variables"""
@@ -84,25 +86,23 @@ class Dotfile(DictParser):
         """return all 'post' actions"""
         return [a for a in self.actions if a.kind == Action.post]
 
-    def get_trans_r(self):
-        """return trans_r object"""
-        return self.trans_r
+    def get_trans_install(self):
+        """return trans_install object"""
+        return self.trans_install
 
-    def get_trans_w(self):
-        """return trans_w object"""
-        return self.trans_w
+    def get_trans_update(self):
+        """return trans_update object"""
+        return self.trans_update
 
     @classmethod
     def _adjust_yaml_keys(cls, value):
         """patch dict"""
         value['noempty'] = value.get(cls.key_noempty, False)
-        value['trans_r'] = value.get(cls.key_trans_r)
-        value['trans_w'] = value.get(cls.key_trans_w)
         value['template'] = value.get(cls.key_template, True)
+        value['dir_as_block'] = value.get(
+            cls.key_dir_as_block, [])
         # remove old entries
         value.pop(cls.key_noempty, None)
-        value.pop(cls.key_trans_r, None)
-        value.pop(cls.key_trans_w, None)
         return value
 
     def __eq__(self, other):
@@ -112,48 +112,63 @@ class Dotfile(DictParser):
         return hash(self.dst) ^ hash(self.src) ^ hash(self.key)
 
     def __str__(self):
-        msg = 'key:\"{}\"'.format(self.key)
-        msg += ', src:\"{}\"'.format(self.src)
-        msg += ', dst:\"{}\"'.format(self.dst)
-        msg += ', link:\"{}\"'.format(str(self.link))
-        msg += ', template:{}'.format(self.template)
+        msg = f'key:\"{self.key}\"'
+        msg += f', src:\"{self.src}\"'
+        msg += f', dst:\"{self.dst}\"'
+        msg += f', link:\"{self.link}\"'
+        msg += f', template:{self.template}'
+        if self.trans_install:
+            msg += f', trans_install:{self.trans_install}'
+        if self.trans_update:
+            msg += f', trans_update:{self.trans_update}'
         if self.chmod:
-            msg += ', chmod:{:o}'.format(self.chmod)
+            if isinstance(self.chmod, int) or len(self.chmod) == 3:
+                msg += f', chmod:{self.chmod:o}'
+            else:
+                msg += f', chmod:\"{self.chmod}\"'
+        if self.dir_as_block:
+            msg += f', dir_as_block:{self.dir_as_block}'
         return msg
 
     def prt(self):
         """extended dotfile to str"""
         indent = '  '
-        out = 'dotfile: \"{}\"'.format(self.key)
-        out += '\n{}src: \"{}\"'.format(indent, self.src)
-        out += '\n{}dst: \"{}\"'.format(indent, self.dst)
-        out += '\n{}link: \"{}\"'.format(indent, str(self.link))
-        out += '\n{}template: \"{}\"'.format(indent, str(self.template))
+        out = f'dotfile: \"{self.key}\"'
+        out += f'\n{indent}src: \"{self.src}\"'
+        out += f'\n{indent}dst: \"{self.dst}\"'
+        out += f'\n{indent}link: \"{self.link}\"'
+        out += f'\n{indent}template: \"{self.template}\"'
         if self.chmod:
-            out += '\n{}chmod: \"{:o}\"'.format(indent, self.chmod)
+            if isinstance(self.chmod, int) or len(self.chmod) == 3:
+                out += f'\n{indent}chmod: \"{self.chmod:o}\"'
+            else:
+                out += f'\n{indent}chmod: \"{self.chmod}\"'
+        if self.dir_as_block:
+            out += (f'\n{indent}dir_as_block: '
+                    f'"{self.dir_as_block}"')
 
-        out += '\n{}pre-action:'.format(indent)
+        out += f'\n{indent}pre-action:'
         some = self.get_pre_actions()
         if some:
             for act in some:
-                out += '\n{}- {}'.format(2 * indent, act)
+                out += f'\n{2 * indent}- {act}'
 
-        out += '\n{}post-action:'.format(indent)
+        out += f'\n{indent}post-action:'
         some = self.get_post_actions()
         if some:
             for act in some:
-                out += '\n{}- {}'.format(2 * indent, act)
+                out += f'\n{2 * indent}- {act}'
 
-        out += '\n{}trans_r:'.format(indent)
-        some = self.get_trans_r()
+        out += f'\n{indent}trans_install:'
+        some = self.get_trans_install()
         if some:
-            out += '\n{}- {}'.format(2 * indent, some)
+            out += f'\n{2 * indent}- {some}'
 
-        out += '\n{}trans_w:'.format(indent)
-        some = self.get_trans_w()
+        out += f'\n{indent}trans_update:'
+        some = self.get_trans_update()
         if some:
-            out += '\n{}- {}'.format(2 * indent, some)
+            out += f'\n{2 * indent}- {some}'
         return out
 
     def __repr__(self):
-        return 'dotfile({!s})'.format(self)
+        return f'dotfile({self})'

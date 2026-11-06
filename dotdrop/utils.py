@@ -14,11 +14,17 @@ import inspect
 import importlib
 import filecmp
 import itertools
-from shutil import rmtree, which
+import shutil
+import json
+import sys
+from pathlib import PurePath
+import requests
+from packaging import version
 
 # local import
 from dotdrop.logger import Logger
 from dotdrop.exceptions import UnmetDependency
+from dotdrop.version import __version__ as VERSION
 
 LOG = Logger()
 STAR = '*'
@@ -38,11 +44,13 @@ NOREMOVE = [os.path.normpath(p) for p in DONOTDELETE]
 def run(cmd, debug=False):
     """run a command (expects a list)"""
     if debug:
-        LOG.dbg('exec: {}'.format(' '.join(cmd)), force=True)
-    proc = subprocess.Popen(cmd, shell=False,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    out, _ = proc.communicate()
-    ret = proc.returncode
+        fcmd = ' '.join(cmd)
+        LOG.dbg(f'exec: {fcmd}', force=True)
+    with subprocess.Popen(cmd, shell=False,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT) as proc:
+        out, _ = proc.communicate()
+        ret = proc.returncode
     out = out.splitlines(keepends=True)
     lines = ''.join([x.decode('utf-8', 'replace') for x in out])
     return ret == 0, lines
@@ -62,11 +70,25 @@ def shellrun(cmd, debug=False):
     returns True|False, output
     """
     if debug:
-        LOG.dbg('shell exec: \"{}\"'.format(cmd), force=True)
+        LOG.dbg(f'shell exec: \"{cmd}\"', force=True)
     ret, out = subprocess.getstatusoutput(cmd)
     if debug:
-        LOG.dbg('shell result ({}): {}'.format(ret, out), force=True)
+        LOG.dbg(f'shell result ({ret}): {out}', force=True)
     return ret == 0, out
+
+
+def userinput(prompt, debug=False):
+    """
+    get user input
+    return user input
+    """
+    if debug:
+        LOG.dbg(f'get user input for \"{prompt}\"', force=True)
+    pre = f'Please provide the value for \"{prompt}\": '
+    res = input(pre)
+    if debug:
+        LOG.dbg(f'user input result: {res}', force=True)
+    return res
 
 
 def fastdiff(left, right):
@@ -135,39 +157,40 @@ def get_unique_tmp_name():
 def removepath(path, logger=None):
     """
     remove a file/directory/symlink
-    if logger is defined, OSError are catched
-    and printed to logger.warn instead of being forwarded
-    as OSError
+    raises OSError in case of error
+    unless logger is defined.
+
+    When logger is defined, a logger.warn
+    is printed and a boolean returned
     """
     if not path:
-        return
+        return True
     if not os.path.lexists(path):
-        err = 'File not found: {}'.format(path)
-        if logger:
-            logger.warn(err)
-            return
-        raise OSError(err)
+        return True
     if os.path.normpath(os.path.expanduser(path)) in NOREMOVE:
-        err = 'Dotdrop refuses to remove {}'.format(path)
+        err = f'Dotdrop refuses to remove {path}'
         if logger:
             logger.warn(err)
-            return
+            return False
         LOG.err(err)
         raise OSError(err)
+    if logger:
+        logger.dbg(f'removing {path}')
     try:
         if os.path.islink(path) or os.path.isfile(path):
             os.unlink(path)
         elif os.path.isdir(path):
-            rmtree(path)
+            shutil.rmtree(path)
         else:
-            err = 'Unsupported file type for deletion: {}'.format(path)
+            err = f'Unsupported file type for deletion: {path}'
             raise OSError(err)
     except Exception as exc:
         err = str(exc)
         if logger:
             logger.warn(err)
-            return
+            return False
         raise OSError(err) from exc
+    return True
 
 
 def samefile(path1, path2):
@@ -201,62 +224,176 @@ def strip_home(path):
     return path
 
 
-def must_ignore(paths, ignores, debug=False):
-    """return true if any paths in list matches any ignore patterns"""
+def _match_ignore_pattern(path, pattern, debug=False):
+    """
+    returns true if path matches the pattern
+    we test the entire path but also
+    any parent directory recursively to
+    be able to match pattern like "*/dir"
+    """
+    subpath = path
+
+    # Account for Windows paths
+    drive = PurePath(path).drive
+
+    while subpath.lstrip(drive) != os.path.sep:
+        # if debug:
+        #     msg = f'fnmatch \"{subpath}\" against {pattern}'
+        #     LOG.dbg(msg, force=True)
+        ret = fnmatch.fnmatch(subpath, pattern)
+        if ret:
+            if debug:
+                LOG.dbg(f'ignore \"{pattern}\" match: {subpath} ({path})',
+                        force=True)
+            return ret
+        subpath = os.path.dirname(subpath)
+    # if debug:
+    #     LOG.dbg(f'NOT ignore \"{pattern}\" match: {path}',
+    #             force=True)
+    return False
+
+
+def _must_ignore(path, ignores, neg_ignores,
+                 debug=False, strict=False):
+    """
+    return true if path matches any ignore patterns
+    """
+    # if debug:
+    #     msg = f'path to check for ignore: {path}'
+    #     LOG.dbg(msg, force=True)
+    #     msg = f'ignore pattern: {ignores}'
+    #     LOG.dbg(msg, force=True)
+    #     msg = f'neg ignore pattern: {neg_ignores}'
+    #     LOG.dbg(msg, force=True)
+    match_ignore_pattern = []
+    # test for ignore pattern
+    for pattern in ignores:
+        if _match_ignore_pattern(path, pattern, debug=debug):
+            match_ignore_pattern.append(path)
+
+    # remove negative match
+    neg_ignore_cnt = 0
+    for pattern in neg_ignores:
+        # remove '!'
+        pattern = pattern[1:]
+        neg_ignore_cnt += 1
+        if not _match_ignore_pattern(path, pattern, debug=debug):
+            if debug:
+                msg = f'NO MATCH negative ignore \"{pattern}\" against {path}'
+                LOG.dbg(msg, force=True)
+            continue
+
+        if debug:
+            msg = f'MATCH negative ignore \"{pattern}\" against {path}'
+            LOG.dbg(msg, force=True)
+
+        # remove from the list
+        try:
+            match_ignore_pattern.remove(path)
+        except ValueError:
+            warn = 'no files that are currently being '
+            warn += f'ignored match \"{pattern}\". In order '
+            warn += 'for a negative ignore pattern '
+            warn += 'to work, it must match a file '
+            warn += 'that is being ignored by a '
+            warn += 'previous ignore pattern.'
+            LOG.warn(warn)
+
+    if len(match_ignore_pattern) < 1:
+        # if debug:
+        #     LOG.dbg(f'NOT ignoring \"{path}\"', force=True)
+        return False
+    if not strict and (
+        os.path.isdir(path) or not os.path.exists(path)
+    ) and neg_ignore_cnt > 0:
+        # this ensures whoever calls this function will
+        # descend into the directory to explore the possiblity
+        # of a file matching the non-ignore pattern
+        if debug:
+            msg = '[!!] ignore would have match but neg ignores'
+            msg += ' present and is a dir or does not exist: '
+            msg += f'\"{path}\" -> not ignored!'
+            LOG.dbg(msg, force=True)
+        return False
+    # if debug:
+    #     LOG.dbg(f'effectively ignoring \"{path}\"', force=True)
+    return True
+
+
+def must_ignore(paths, ignores, debug=False,
+                strict=False):
+    """
+    return true if any paths in list matches any ignore patterns
+    """
     if not ignores:
         return False
     if debug:
-        LOG.dbg('must ignore? \"{}\" against {}'.format(paths, ignores),
+        LOG.dbg(f'[IGN] IGNORE? \"{paths}\" against {ignores}',
                 force=True)
-    ignored_negative, ignored = categorize(
+    nign, ign = categorize(
         lambda ign: ign.startswith('!'), ignores)
     for path in paths:
-        ignore_matches = []
-        # First ignore dotfiles
-        for i in ignored:
-            if fnmatch.fnmatch(path, i):
-                if debug:
-                    LOG.dbg('ignore \"{}\" match: {}'.format(i, path),
-                            force=True)
-                ignore_matches.append(path)
-        # Then remove any matches that actually shouldn't be ignored
-        for nign in ignored_negative:
-            # Each of these will start with an '!' so we need to remove that
-            nign = nign[1:]
-            if fnmatch.fnmatch(path, nign):
-                if debug:
-                    msg = 'negative ignore \"{}\" match: {}'.format(nign, path)
-                    LOG.dbg(msg, force=True)
-                try:
-                    ignore_matches.remove(path)
-                except ValueError:
-                    LOG.warn('no files that are currently being '
-                             'ignored match \"{}\". In order '
-                             'for a negative ignore pattern '
-                             'to work, it must match a file '
-                             'that is being ignored by a '
-                             'previous ignore pattern.'.format(nign)
-                             )
-        if ignore_matches:
+        if _must_ignore(path, ign, nign,
+                        debug=debug, strict=strict):
+            if debug:
+                LOG.dbg(f'[IGN] IGNORING \"{paths}\"', force=True)
             return True
     if debug:
-        LOG.dbg('NOT ignoring {}'.format(paths), force=True)
+        LOG.dbg(f'[IGN] NOT IGNORING \"{paths}\"', force=True)
     return False
+
+
+def _cp(src, dst, ignore_func=None, debug=False):
+    """
+    the copy function for copytree
+    returns the numb of files copied
+    """
+    if ignore_func and ignore_func(src):
+        return 0
+    if not os.path.isfile(src):
+        # ignore special files
+        if debug:
+            LOG.dbg(f'ignore special file \"{src}\"',
+                    force=True)
+        return 0
+    dstdir = os.path.dirname(dst)
+    if debug:
+        LOG.dbg(f'mkdir \"{dstdir}\"',
+                force=True)
+    os.makedirs(dstdir, exist_ok=True)
+    if debug:
+        LOG.dbg(f'cp {src} {dst}',
+                force=True)
+    path = shutil.copy2(src, dst)
+    if os.path.exists(path):
+        return 1
+    return 0
+
+
+def copyfile(src, dst, debug=False):
+    """
+    copy file from src to dst
+    no dir expected!
+    returns True if file was copied
+    """
+    return _cp(src, dst, debug=debug) == 1
 
 
 def uniq_list(a_list):
     """unique elements of a list while preserving order"""
     new = []
+    if not a_list:
+        return new
     for elem in a_list:
         if elem not in new:
             new.append(elem)
     return new
 
 
-def patch_ignores(ignores, prefix, debug=False):
+def ignores_to_absolute(ignores, prefixes, debug=False):
     """allow relative ignore pattern"""
     new = []
-    LOG.dbg('ignores before patching: {}'.format(ignores), force=debug)
+    LOG.dbg(f'ignores before patching: {ignores}', force=debug)
     for ignore in ignores:
         negative = ignore.startswith('!')
         if negative:
@@ -278,12 +415,13 @@ def patch_ignores(ignores, prefix, debug=False):
                     new.append(ignore)
                 continue
         # patch ignore
-        path = os.path.join(prefix, ignore)
-        if negative:
-            new.append('!' + path)
-        else:
-            new.append(path)
-    LOG.dbg('ignores after patching: {}'.format(new), force=debug)
+        for prefix in prefixes:
+            path = os.path.join(prefix, ignore)
+            if negative:
+                new.append('!' + path)
+            else:
+                new.append(path)
+    LOG.dbg(f'ignores after patching: {new}', force=debug)
     return new
 
 
@@ -315,44 +453,83 @@ def get_module_from_path(path):
 def dependencies_met():
     """make sure all dependencies are met"""
     # check unix tools deps
-    deps = ['file', 'diff']
-    err = 'The tool \"{}\" was not found in the PATH!'
-    for dep in deps:
-        if not which(dep):
-            raise UnmetDependency(err.format(dep))
-    # check python deps
-    err = 'missing python module \"{}\"'
+    # diff command is checked in settings.py
+    deps = ['file']
 
+    for dep in deps:
+        if not shutil.which(dep):
+            err = f'The tool \"{dep}\" was not found in the PATH!'
+            raise UnmetDependency(err)
+
+    # check python deps
 # pylint: disable=C0415
+
     # python-magic
+    name = 'python-magic'
+    err = f'missing python module \"{name}\"'
     try:
         import magic
         assert magic
         if not hasattr(magic, 'from_file'):
-            LOG.warn(err.format('python-magic'))
+            LOG.warn(err)
     except ImportError:
-        LOG.warn(err.format('python-magic'))
+        LOG.warn(err)
 
     # docopt
+    name = 'docopt'
+    err = f'missing python module \"{name}\"'
     try:
         from docopt import docopt
         assert docopt
     except ImportError as exc:
-        raise Exception(err.format('docopt')) from exc
+        raise UnmetDependency(err) from exc
 
     # jinja2
+    name = 'jinja2'
+    err = f'missing python module \"{name}\"'
     try:
         import jinja2
         assert jinja2
     except ImportError as exc:
-        raise Exception(err.format('jinja2')) from exc
+        raise UnmetDependency(err) from exc
 
     # ruamel.yaml
+    name = 'ruamel.yaml'
+    err = f'missing python module \"{name}\"'
     try:
         from ruamel.yaml import YAML
         assert YAML
     except ImportError as exc:
-        raise Exception(err.format('ruamel.yaml')) from exc
+        raise UnmetDependency(err) from exc
+
+    # tomli
+    if sys.version_info < (3, 11):
+        name = 'tomli'
+        err = f'missing python module \"{name}\"'
+        try:
+            import tomli
+            assert tomli
+        except ImportError as exc:
+            raise UnmetDependency(err) from exc
+
+    # tomli_w
+    name = 'tomli_w'
+    err = f'missing python module \"{name}\"'
+    try:
+        import tomli_w
+        assert tomli_w
+    except ImportError as exc:
+        raise UnmetDependency(err) from exc
+
+    # distro
+    name = 'distro'
+    err = f'missing python module \"{name}\"'
+    try:
+        import distro
+        assert distro
+    except ImportError as exc:
+        raise UnmetDependency(err) from exc
+
 # pylint: enable=C0415
 
 
@@ -382,13 +559,15 @@ def get_default_file_perms(path, umask):
 
 def get_file_perm(path):
     """return file permission"""
-    return os.stat(path).st_mode & 0o777
+    if not os.path.exists(path):
+        return 0o777
+    return os.stat(path, follow_symlinks=True).st_mode & 0o777
 
 
 def chmod(path, mode, debug=False):
     """change mode of file"""
     if debug:
-        LOG.dbg('chmod {} {}'.format(oct(mode), path), force=True)
+        LOG.dbg(f'chmod {mode:o} {path}', force=True)
     os.chmod(path, mode)
     return get_file_perm(path) == mode
 
@@ -416,20 +595,99 @@ def debug_list(title, elems, debug):
     """pretty print list"""
     if not debug:
         return
-    LOG.dbg('{}:'.format(title))
+    LOG.dbg(f'{title}:', force=debug)
     for elem in elems:
-        LOG.dbg('\t- {}'.format(elem))
+        LOG.dbg(f'\t- {elem}', force=debug)
 
 
 def debug_dict(title, elems, debug):
     """pretty print dict"""
     if not debug:
         return
-    LOG.dbg('{}:'.format(title))
+    LOG.dbg(f'{title}:', force=debug)
     for k, val in elems.items():
         if isinstance(val, list):
-            LOG.dbg('\t- \"{}\":'.format(k))
+            LOG.dbg(f'\t- \"{k}\":', force=debug)
             for i in val:
-                LOG.dbg('\t\t- {}'.format(i))
+                LOG.dbg(f'\t\t- {i}', force=debug)
         else:
-            LOG.dbg('\t- \"{}\": {}'.format(k, val))
+            LOG.dbg(f'\t- \"{k}\": {val}', force=debug)
+
+
+def check_version():
+    """
+    get dotdrop latest version on github
+    compare with "version"
+    and emit warning in case new version is available
+    """
+    url = 'https://api.github.com/repos/deadc0de6/dotdrop/releases/latest'
+    try:
+        req = requests.get(url, timeout=1)
+    except requests.exceptions.RequestException:
+        # request failed
+        return
+    if not req:
+        # request failed
+        return
+    if req.status_code != 200:
+        # request failed
+        return
+    # get json
+    try:
+        latest = req.json()['name']
+    except json.decoder.JSONDecodeError:
+        return
+    except ValueError:
+        return
+    # compare
+    if latest.startswith('v'):
+        latest = latest[1:]
+    if version.parse(VERSION) < version.parse(latest):
+        msg = f'A new version of dotdrop is available ({latest})'
+        LOG.warn(msg)
+
+
+def pivot_path(path, newdir, striphome=False, logger=None):
+    """change path to be under newdir"""
+    if logger:
+        logger.dbg(f'pivot new dir: \"{newdir}\"')
+        logger.dbg(f'strip home: {striphome}')
+    if striphome:
+        path = strip_home(path)
+
+    # Account for Windows paths
+    sub = path.lstrip(PurePath(path).anchor)
+
+    new = os.path.join(newdir, sub)
+    if logger:
+        logger.dbg(f'pivot \"{path}\" to \"{new}\"')
+    return new
+
+
+def dir_empty(path):
+    """return true if directory is empty"""
+    if not os.path.exists(path) or not os.path.isdir(path):
+        return True
+    return len(os.listdir(path)) < 1
+
+
+def is_bin_in_path(command):
+    """
+    check binary from command is in path
+    """
+    bpath = ""
+    if not command:
+        return False
+    try:
+        binary = command.split(" ")[0]
+    except ValueError:
+        return False
+    if not binary:
+        return False
+    try:
+        bpath = shutil.which(binary)
+    except shutil.Error:
+        return False
+    if not bpath:
+        return False
+    return os.path.exists(bpath)

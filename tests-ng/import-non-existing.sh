@@ -5,60 +5,44 @@
 # test import not existing
 #
 
-# exit on first error
-set -e
-
-# all this crap to get current path
-rl="readlink -f"
-if ! ${rl} "${0}" >/dev/null 2>&1; then
-  rl="realpath"
-
-  if ! hash ${rl}; then
-    echo "\"${rl}\" not found !" && exit 1
-  fi
-fi
-cur=$(dirname "$(${rl} "${0}")")
-
-#hash dotdrop >/dev/null 2>&1
-#[ "$?" != "0" ] && echo "install dotdrop to run tests" && exit 1
-
-#echo "called with ${1}"
-
-# dotdrop path can be pass as argument
+## start-cookie
+set -eu -o errtrace -o pipefail
+cur=$(cd "$(dirname "${0}")" && pwd)
 ddpath="${cur}/../"
-[ "${1}" != "" ] && ddpath="${1}"
-[ ! -d ${ddpath} ] && echo "ddpath \"${ddpath}\" is not a directory" && exit 1
-
-export PYTHONPATH="${ddpath}:${PYTHONPATH}"
-bin="python3 -m dotdrop.dotdrop"
-hash coverage 2>/dev/null && bin="coverage run -a --source=dotdrop -m dotdrop.dotdrop" || true
-
-echo "dotdrop path: ${ddpath}"
-echo "pythonpath: ${PYTHONPATH}"
-
-# get the helpers
-source ${cur}/helpers
-
-echo -e "$(tput setaf 6)==> RUNNING $(basename $BASH_SOURCE) <==$(tput sgr0)"
+PPATH="{PYTHONPATH:-}"
+export PYTHONPATH="${ddpath}:${PPATH}"
+altbin="python3 -m dotdrop.dotdrop"
+if hash coverage 2>/dev/null; then
+  mkdir -p coverages/
+  altbin="coverage run -p --data-file coverages/coverage --source=dotdrop -m dotdrop.dotdrop"
+fi
+bin="${DT_BIN:-${altbin}}"
+# shellcheck source=tests-ng/helpers
+source "${cur}"/helpers
+echo -e "$(tput setaf 6)==> RUNNING $(basename "${BASH_SOURCE[0]}") <==$(tput sgr0)"
+## end-cookie
 
 ################################################################
 # this is the test
 ################################################################
 
 # the dotfile source
-tmps=`mktemp -d --suffix='-dotdrop-tests' || mktemp -d`
-mkdir -p ${tmps}/dotfiles
+tmps=$(mktemp -d --suffix='-dotdrop-tests' || mktemp -d)
+mkdir -p "${tmps}"/dotfiles
 # the dotfile destination
-tmpd=`mktemp -d --suffix='-dotdrop-tests' || mktemp -d`
+tmpd=$(mktemp -d --suffix='-dotdrop-tests' || mktemp -d)
 #echo "dotfile destination: ${tmpd}"
 
+clear_on_exit "${tmps}"
+clear_on_exit "${tmpd}"
+
 # create the dotfile
-echo "test" > ${tmps}/dotfiles/abc
+echo "test" > "${tmps}"/dotfiles/abc
 
 # create the config file
 cfg="${tmps}/config.yaml"
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -87,9 +71,9 @@ _EOF
 #cat ${cfg}
 
 # dummy call
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -108,11 +92,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "variables" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -131,11 +115,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "variables with separator" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -154,11 +138,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "variables glob" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -177,11 +161,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "actions" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -200,11 +184,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "actions with separator" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -223,11 +207,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "actions glob" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -246,11 +230,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "configs" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -269,11 +253,11 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "configs with separator" && exit 1
 set -e
 
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -292,12 +276,9 @@ _EOF
 
 # dummy call
 set +e
-cd ${ddpath} | ${bin} files -c ${cfg} -p p1 -V
+cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 -V
 [ "$?" = "0" ] && echo "configs glob" && exit 1
 set -e
-
-## CLEANING
-rm -rf ${tmps} ${tmpd}
 
 echo "OK"
 exit 0

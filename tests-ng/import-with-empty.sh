@@ -6,60 +6,44 @@
 # returns 1 in case of error
 #
 
-# exit on first error
-set -e
-
-# all this crap to get current path
-rl="readlink -f"
-if ! ${rl} "${0}" >/dev/null 2>&1; then
-  rl="realpath"
-
-  if ! hash ${rl}; then
-    echo "\"${rl}\" not found !" && exit 1
-  fi
-fi
-cur=$(dirname "$(${rl} "${0}")")
-
-#hash dotdrop >/dev/null 2>&1
-#[ "$?" != "0" ] && echo "install dotdrop to run tests" && exit 1
-
-#echo "called with ${1}"
-
-# dotdrop path can be pass as argument
+## start-cookie
+set -eu -o errtrace -o pipefail
+cur=$(cd "$(dirname "${0}")" && pwd)
 ddpath="${cur}/../"
-[ "${1}" != "" ] && ddpath="${1}"
-[ ! -d ${ddpath} ] && echo "ddpath \"${ddpath}\" is not a directory" && exit 1
-
-export PYTHONPATH="${ddpath}:${PYTHONPATH}"
-bin="python3 -m dotdrop.dotdrop"
-hash coverage 2>/dev/null && bin="coverage run -a --source=dotdrop -m dotdrop.dotdrop" || true
-
-echo "dotdrop path: ${ddpath}"
-echo "pythonpath: ${PYTHONPATH}"
-
-# get the helpers
-source ${cur}/helpers
-
-echo -e "$(tput setaf 6)==> RUNNING $(basename $BASH_SOURCE) <==$(tput sgr0)"
+PPATH="{PYTHONPATH:-}"
+export PYTHONPATH="${ddpath}:${PPATH}"
+altbin="python3 -m dotdrop.dotdrop"
+if hash coverage 2>/dev/null; then
+  mkdir -p coverages/
+  altbin="coverage run -p --data-file coverages/coverage --source=dotdrop -m dotdrop.dotdrop"
+fi
+bin="${DT_BIN:-${altbin}}"
+# shellcheck source=tests-ng/helpers
+source "${cur}"/helpers
+echo -e "$(tput setaf 6)==> RUNNING $(basename "${BASH_SOURCE[0]}") <==$(tput sgr0)"
+## end-cookie
 
 ################################################################
 # this is the test
 ################################################################
 
 # dotdrop directory
-basedir=`mktemp -d --suffix='-dotdrop-tests' || mktemp -d`
+basedir=$(mktemp -d --suffix='-dotdrop-tests' || mktemp -d)
 echo "[+] dotdrop dir: ${basedir}"
 echo "[+] dotpath dir: ${basedir}/dotfiles"
 # the temp directory
-tmpd=`mktemp -d --suffix='-dotdrop-tests' || mktemp -d`
+tmpd=$(mktemp -d --suffix='-dotdrop-tests' || mktemp -d)
+
+clear_on_exit "${basedir}"
+clear_on_exit "${tmpd}"
 
 # create a dotfile
 dftoimport="${tmpd}/a_dotfile"
-echo 'some content' > ${dftoimport}
+echo 'some content' > "${dftoimport}"
 
 # create the config file
 cfg="${basedir}/config.yaml"
-cat > ${cfg} << _EOF
+cat > "${cfg}" << _EOF
 config:
   backup: true
   create: true
@@ -93,21 +77,18 @@ profiles:
 _EOF
 
 echo "[+] import"
-cd ${ddpath} | ${bin} import -c ${cfg} -p p1 --verbose ${dftoimport}
+cd "${ddpath}" | ${bin} import -f -c "${cfg}" -p p1 --verbose "${dftoimport}"
 [ "$?" != "0" ] && exit 1
 
 echo "[+] install"
-cd ${ddpath} | ${bin} install -c ${cfg} -f -p p1 --verbose | grep '^5 dotfile(s) installed.$'
-rm -f ${dftoimport}
-cd ${ddpath} | ${bin} install -c ${cfg} -f -p p1 --verbose | grep '^6 dotfile(s) installed.$'
+cd "${ddpath}" | ${bin} install -c "${cfg}" -f -p p1 --verbose | grep '^5 dotfile(s) installed.$'
+rm -f "${dftoimport}"
+cd "${ddpath}" | ${bin} install -c "${cfg}" -f -p p1 --verbose | grep '^6 dotfile(s) installed.$'
 
-nb=`cd ${ddpath} | ${bin} files -c ${cfg} -p p1 --verbose | grep '^[a-zA-Z]' | wc -l`
-[ "${nb}" != "6" ] && echo 'error in dotfile list' && exit 1
+nb=$(cd "${ddpath}" | ${bin} files -c "${cfg}" -p p1 --verbose | grep '^[a-zA-Z]' | grep -v '^Dotfile(s)' | wc -l)
+[ "${nb}" != "6" ] && echo "error in dotfile list (${nb} VS 6)" && exit 1
 
 #cat ${cfg}
-
-## CLEANING
-rm -rf ${basedir} ${tmpd}
 
 echo "OK"
 exit 0

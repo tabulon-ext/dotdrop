@@ -2,38 +2,43 @@
 
 Run `dotdrop --help` to see all available options.
 
-## Basic usage
-
-The basic use of dotdrop is
-
-* import a file/directory to manage (this will copy the files from the filesystem to your `dotpath`): `dotdrop import <somefile>`
-* install the dotfiles (will *copy/link* those from your `dotpath` to the filesystem): `dotdrop install`
-
-Then if you happen to update the file/directory directly on the filesystem (add new file/dir, edit content, etc) you can use the `update` command to mirror back those changes in dotdrop.
-
-For more advanced uses:
-
-* `dotdrop --help` for the cli usage.
-* [the example](https://github.com/deadc0de6/dotdrop#getting-started)
-* [the howto](howto/howto.md)
-
 ## Profile
 
 The default profile used by dotdrop is the *hostname* of the host you are running dotdrop on.
 
 It can be changed:
 
-* using the command line switch `-p --profile=<profile>`
-* by defining it in the env variable `DOTDROP_PROFILE`
+* Using the command line switch `-p`/`--profile=<profile>`
+* By defining it in the env variable `DOTDROP_PROFILE`
+
+## List profiles
+
+The `profiles` command lists the profiles defined in the config file.
+```bash
+$ dotdrop profiles
+```
+
+Dotdrop allows to choose which profile to use
+with the `--profile` switch if you use something
+other than the default (the hostname).
+
+Profiles can be regrouped by [group](config/config-profiles.md#profile-group-entry)
+and decorated with a [description](config/config-profiles.md#profile-description-entry),
+in which case the `profiles` command displays them by group.
+[Hidden profiles](config/config-profiles.md#hidden-profiles)
+(name starting with an underscore) are not displayed.
+
+The default profile can also be changed by defining the
+`DOTDROP_PROFILE` environment variable.
 
 ## Import dotfiles
 
 The `import` command imports dotfiles to be managed by dotdrop.
 It copies the dotfile to your `dotpath` and updates the config file with the new entry.
 
-Dotdrop will ask for dereferencing symlinks on import unless `-f --force` is used.
+Dotdrop will ask whether to dereference symlinks on import unless `-f`/`--force` is used.
 
-For example to import `~/.xinitrc`
+For example, to import `~/.xinitrc`:
 ```bash
 $ dotdrop import ~/.xinitrc
 	-> "/home/user/.xinitrc" imported
@@ -41,36 +46,51 @@ $ dotdrop import ~/.xinitrc
 1 file(s) imported.
 ```
 
-You can control how the dotfile key is generated in the config file
-with the config entry `longkey` (per default to *false*).
+You can explicitely provide the key dotdrop should use for the dotfile entry
+in the config file with the `-K --dkey` cli switch. Note that the provided
+string will be sanitized for yaml. Also if the key already exists,
+it will be appended with `_<incremental_number>` to avoid duplicates.
 
-Two formats are available:
+If the key is not provided, it will be automatically created based on the
+following [config entries](config/config-config.md):
 
-* *short format* (default): take the shortest unique path
-* *long format*: take the full path
+* `longkey`
+    * `false` (default): take the shortest unique path
+    * `true` take the full path
+* `key_prefix`: defines if the key is prefixed with `f<key_separator>` for file and `d<key_separator>` for directory
+* `key_separator`: defines the separator to use (defaults to `_`)
 
-For example `~/.config/awesome/rc.lua` gives
+For example, `~/.config/awesome/rc.lua` gives:
 
 * `f_rc.lua` in the short format
 * `f_config_awesome_rc.lua` in the long format
 
-Importing `~/.mutt/colors` and then `~/.vim/colors` will result in
+Importing `~/.mutt/colors` and then `~/.vim/colors` will result in:
 
 * `d_colors` and `d_vim_colors` in the short format
 * `d_mutt_colors` and `d_vim_colors` in the long format
 
-Dotfiles can be imported as a different file with the use
-of the command line switch `--as` (effectively selecting the `src` part
-of the dotfile in the config). It is however recommended
-to use [templating](templating.md) to avoid duplicates and optimize
-dotfiles management.
+It is possible to import a dotfile while pretending it was at a different
+path with the use of `--as` what will effectively modify the `src` path
+of the generated dotfile entry in the config as well as the location of the file
+in the *dotpath*.
+The argument to `--as` is expected to be an absolute path and will be made
+absolute in case it isn't (specifying `--as test` will result in something like
+`--as <current-working-directory>/test`). It is however recommended
+to use [templating](template/templating.md) to avoid duplicates and optimize
+dotfile management instead of using `--as`.
 ```bash
+# imported to <dotpath>/zshrc.test
 $ dotdrop import ~/.zshrc --as=~/.zshrc.test
 ```
+see [issue #220](https://github.com/deadc0de6/dotdrop/issues/220) and [issue #368](https://github.com/deadc0de6/dotdrop/issues/368).
 
-To ignore specific pattern during import see [the ignore patterns](config.md#ignore-patterns)
+By importing a path using the profile special keyword `ALL`, a dotfile will be created
+in the config but won't be associated to any profile.
 
-For more options, see the usage with `dotdrop --help`
+To ignore specific patterns during import, see [the ignore patterns](config/config-file.md#ignore-patterns).
+
+For more options, see the usage with `dotdrop --help`.
 
 ## Install dotfiles
 
@@ -79,52 +99,77 @@ The `install` command installs/deploys dotfiles managed by dotdrop from the `dot
 $ dotdrop install
 ```
 
-The dotfile will be installed only if it differs from the version already present on its destination.
+A dotfile will be installed only if it differs from the version already present at its destination.
 
-some available options
+Some available options:
 
-* `-t --temp`: install the dotfile(s) to a temporary directory for review (it helps to debug templating issues for example).
-  Note that actions are not executed in that mode.
-* `-a --force-actions`: force the execution of actions even if the dotfiles are not installed
-* `-f --force`: do not ask any confirmation
+* `-t`/`--temp`: Install the dotfile(s) to a temporary directory for review (helping to debug templating issues, for example).
+  Note that actions are not executed in this mode.
+* `-a`/`--force-actions`: Force the execution of actions even if the dotfiles are not installed (see [Fake dotfile and actions](config/config-actions.md#fake-dotfile-and-actions) as an alternative)
+* `-f`/`--force`: Do not ask for any confirmation
+* `-W`/`--workdir-clear`: Clear the `workdir` before installing dotfiles (see [the config entry](config/config-config.md) `clear_workdir`)
+* `-R`/`--remove-existing`: Applies to directory dotfiles. With `link: nolink`, it removes files not managed by dotdrop in the destination directory. With `link: link_children`, it removes only dangling direct-child symlinks whose source child no longer exists and whose target is inside the dotfile's source directory or dotdrop's `workdir`; other destination entries are preserved.
 
-To ignore specific pattern during installation see [the ignore patterns](config.md#ignore-patterns)
+To ignore specific patterns during installation, see [the ignore patterns](config/config-file.md#ignore-patterns).
 
-For more options, see the usage with `dotdrop --help`
+### Prompt for confirmation
+
+Instead of running `dotdrop install` (or `uninstall`) twice — first with `-d`/`--dry`
+to review the changes and then for real — you can ask dotdrop to show the
+planned changes and wait for your confirmation before applying them. This is
+controlled by the `prompt` [config entry](config/config-config.md) and the
+`--prompt`/`--no-prompt` switches (the switches override the config):
+
+```bash
+# enable it through the config (prompt: true) or with the switch:
+$ dotdrop install --prompt
+The following changes would be applied by install:
+[DRY] would install ~/.vimrc
+Apply these changes? [y/N] ? y
+-> install ...
+1 dotfile(s) installed.
+```
+
+When the preview is shown, no action is executed and no file is touched; once
+you answer `y`, the operation is applied without any further per-file
+confirmation. `--force` disables the prompt entirely, and the
+prompt is skipped when `-d`/`--dry` or `-t`/`--temp` is used.
+
+For more options, see the usage with `dotdrop --help`.
+
+### Dry run
+
+The `-d`/`--dry` switch makes `install` (and `uninstall`) only *simulate* the
+operation: no file is copied, linked, removed or restored, no action is
+executed and the config file is left untouched. Each action that *would* be
+performed is prefixed with `[DRY]` and the summary line reflects that nothing
+was actually committed (`N dotfile(s) would be installed.` /
+`N dotfile(s) would be uninstalled.`), and the `config file updated` message
+is suppressed.
 
 ## Compare dotfiles
 
-The `compare` command compares dotfiles on their destination with the one stored in your `dotpath`.
+The `compare` command compares dotfiles at their destinations with the ones stored in your `dotpath`.
 ```bash
 $ dotdrop compare
 ```
 
-The diffing is done by the unix tool `diff` in the backend, one can provide its specific
-diff command using the config entry `diff_command`.
+The diffing is done with the UNIX tool `diff` as the backend; one can provide a specific
+diff command using [the config entry](config/config-config.md) `diff_command`.
 
-To ignore specific pattern, see [the ignore patterns](config.md#ignore-patterns)
-
-To completely ignore all files not present in `dotpath` see [ignore missing](#ignore-missing).
-
-It is also possible to install all dotfiles for a specific profile
-in a temporary directory in order to manually compare them with
-the local version by using `install` and the `-t` switch.
-
-For more options, see the usage with `dotdrop --help`.
-
-## List profiles
-
-The `profiles` command lists defined profiles in the config file
+You can specify against which destination file to compare:
 ```bash
-$ dotdrop profiles
+$ dotdrop compare -C ~/.vimrc
 ```
 
-Dotdrop allows to choose which profile to use
-with the `--profile` switch if you use something
-else than the default (the hostname).
+To ignore specific patterns, see [the ignore patterns](config/config-file.md#ignore-patterns).
 
-The default profile can also be changed by defining the
-`DOTDROP_PROFILE` environment variable.
+To completely ignore all files not present in `dotpath` see [Ignore missing](config/config-file.md#ignore-missing).
+
+If you want to get notified on files present in the `workdir` but not tracked
+by dotdrop see the [compare_workdir](config/config-config.md).
+
+For more options, see the usage with `dotdrop --help`.
 
 ## List dotfiles
 
@@ -137,10 +182,10 @@ f_xinitrc
 	-> link: nolink
 ```
 
-By using the `-T --template` switch, only the dotfiles that
-are using [templating](templating.md) are listed.
+By using the `-T`/`--template` switch, only the dotfiles that
+are using [templating](template/templating.md) are listed.
 
-It is also possible to list all files related to each dotfile entries
+It is also possible to list all the files related to each dotfile entry
 by invoking the `detail` command, for example:
 ```bash
 $ dotdrop detail
@@ -151,19 +196,19 @@ f_xinitrc (dst: "/home/user/.xinitrc", link: nolink)
 
 This is especially useful when the dotfile entry is a directory
 and one wants to have information on the different files it contains
-(does a specific file uses templating, etc).
+(does a specific file uses templating, etc.).
 
-For more options, see the usage with `dotdrop --help`
+For more options, see the usage with `dotdrop --help`.
 
 ## Update dotfiles
 
-The `update` commands will updates a dotfile managed by dotdrop by copying the dotfile
+The `update` command updates a dotfile managed by dotdrop by copying the dotfile
 from the filesystem to the `dotpath`. Only dotfiles that have differences with the stored version are updated.
-A confirmation is requested from the user before any overwrite/update unless the `-f --force` switch is used.
+A confirmation is requested from the user before any overwrite/update unless the `-f`/`--force` switch is used.
 
 Either provide the path of the file containing the new version of the dotfile or
-provide the dotfile key to update (as found in the config file) along with the `-k --key` switch.
-When using the `-k --key` switch and no key is provided, all dotfiles for that profile are updated.
+provide the dotfile key to update (as found in the config file) along with the `-k`/`--key` switch.
+When using the `-k`/`--key` switch and no key is provided, all dotfiles for that profile are updated.
 ```bash
 ## update by path
 $ dotdrop update ~/.vimrc
@@ -174,16 +219,19 @@ $ dotdrop update --key f_vimrc
 
 If not argument is provided, all dotfiles for the selected profile are updated.
 
-To ignore specific pattern, see [the dedicated page](config.md#ignore-patterns)
+To ignore specific patterns, see [the dedicated page](config/config-file.md#ignore-patterns).
 
-To completely ignore all files not present in `dotpath` see [ignore missing](#ignore-missing).
+To completely ignore all files not present in `dotpath`, see [Ignore missing](config/config-file.md#ignore-missing).
 
 There are two cases when updating a dotfile:
 
-### The dotfile doesn't use [templating](templating.md)
+* [The dotfile does not use templating](#the-dotfile-does-not-use-templating)
+* [The dotfile uses templating](#the-dotfile-uses-templating)
+
+### The dotfile does not use [templating](template/templating.md)
 
 The new version of the dotfile is copied to the *dotpath* directory and overwrites
-the old version. If git is used to version the dotfiles stored by dotdrop, the git command
+the old version. If Git is used to version the dotfiles stored by dotdrop, the Git command
 `diff` can be used to view the changes.
 
 ```bash
@@ -191,20 +239,20 @@ $ dotdrop update ~/.vimrc
 $ git diff
 ```
 
-### The dotfile uses [templating](templating.md)
+### The dotfile uses [templating](template/templating.md)
 
-The dotfile must be manually updated, three solutions can be used to identify the
+The dotfile must be manually updated; three solutions can be used to identify the
 changes to apply to the template:
 
-* Use the `compare` command
+* Use the `compare` command:
 ```bash
 ## use compare to identify change(s)
 $ dotdrop compare --file=~/.vimrc
 ```
 
-* Call `update` with the `-P --show-patch` switch that will provide with an ad-hoc solution
-  to manually patch the template file using a temporary generated version of the template
-  (this isn't a bullet proof solution and might need manual checking)
+* Call `update` with the `-P`/`--show-patch` switch, which provides an ad-hoc solution
+  to manually patch the template file using a temporary generated version of the template.
+  (This isn't a bullet-proof solution and might need manual checking.)
 ```bash
 ## get an ad-hoc solution to manually patch the template
 $ dotdrop update --show-patch ~/.vimrc
@@ -213,7 +261,7 @@ $ dotdrop update --show-patch ~/.vimrc
 ```
 
 * Install the dotfiles to a temporary directory (using the `install` command and the
-  `-t` switch) and compare the generated dotfile with the local one.
+  `-t` switch) and compare the generated dotfile with the local one:
 ```bash
 ## use install to identify change(s)
 $ dotdrop install -t -t f_vimrc
@@ -226,15 +274,40 @@ $ diff ~/.vimrc /tmp/dotdrop-6ajz7565/home/user/.vimrc
 The command `remove` allows to stop managing a specific dotfile with
 dotdrop. It will:
 
-* remove the entry in the config file (under `dotfiles` and `profile`)
-* remove the file from the `dotpath`
+* remove the entry from the config file (under `dotfiles` and `profile`)
+* delete the file from the `dotpath`
 
-For more options, see the usage with `dotdrop --help`
+For more options, see the usage with `dotdrop --help`.
+
+## Uninstall dotfiles
+
+The `uninstall` command removes dotfiles installed by dotdrop
+```bash
+$ dotdrop uninstall
+```
+
+It will remove the installed dotfiles related to the provided key
+(or all dotfiles if not provided) of the selected profile.
+
+If a backup exists ([backup entry](config/config-config.md#backup-entry)),
+the file will be restored.
+
+The `--prompt`/`--no-prompt` switches and the `prompt` [config entry](config/config-config.md)
+also apply to `uninstall` (see [Prompt for confirmation](#prompt-for-confirmation)).
+
+For more options, see the usage with `dotdrop --help`.
+
+## Generate a default config
+
+The `gencfg` command will generate a default config in yaml
+```bash
+$ dotdrop gencfg > config.yaml
+```
 
 ## Concurrency
 
-The command line switch `-w --workers` if set to a value greater than one allows to use
-multiple concurrent workers to execute an operation. It can be applied to the following
+The command line switch `-w`/`--workers`, if set to a value greater than one, enables the use
+of multiple concurrent workers to execute an operation. It can be applied to the following
 commands:
 
 * `install`
@@ -244,78 +317,61 @@ commands:
 It should be set to a maximum of the number of cores available (usually returned
 on linux by the command `nproc`).
 
-It may speed up the operation but cannot be used interractively (it needs `-f --force` to be set
-except for `compare`) and cannot be used with `-d --dry`. Also information printed to stdout/stderr
+It may speed up the operation but cannot be used interactively (it needs `-f`/`--force` to be set
+except for `compare`) and cannot be used with `-d`/`--dry`. Also, information printed to stdout/stderr
 will probably be messed up.
 
-**WARNING** this feature hasn't been extensively tested and is to be used at your own risk.
-If you try it out and find any issue, please [report it](https://github.com/deadc0de6/dotdrop/issues).
-Also if you find it useful and have been able to successfully speed up your operation when using
-`-w --workers`, do please also report it [in an issue](https://github.com/deadc0de6/dotdrop/issues).
+**WARNING:** This feature hasn't been extensively tested and is to be used at your own risk.
+If you try it out and find any issues, please [report them](https://github.com/deadc0de6/dotdrop/issues).
+Also, if you find it useful and have been able to successfully speed up your operation when using
+`-w`/`--workers`, do please also report it [in an issue](https://github.com/deadc0de6/dotdrop/issues).
 
 ## Environment variables
 
-Following environment variables can be used to specify different CLI options.
-Note that CLI switches take precedence over environment variables (except for `DOTDROP_FORCE_NODEBUG`)
+The following environment variables can be used to specify different CLI options and change behaviors.
+Note that CLI switches take precedence over environment variables
 
-* `DOTDROP_PROFILE`: `-p --profile`
+`DOTDROP_PROFILE`: `-p`/`--profile`
 ```bash
 export DOTDROP_PROFILE="my-fancy-profile"
 ```
-* `DOTDROP_CONFIG`: `-c --cfg`
+
+`DOTDROP_CONFIG`: `-c`/`--cfg`
 ```bash
 export DOTDROP_CONFIG="/home/user/dotdrop/config.yaml"
 ```
-* `DOTDROP_NOBANNER`: `-b --no-banner`
+
+`DOTDROP_NOBANNER`: `-b`/`--no-banner`
 ```bash
 export DOTDROP_NOBANNER=
 ```
-* `DOTDROP_DEBUG`: `-V --verbose`
+
+`DOTDROP_DEBUG`: `-V`/`--verbose`
 ```bash
 export DOTDROP_DEBUG=
 ```
-* `DOTDROP_FORCE_NODEBUG`: disable debug outputs even if `-V --verbose` is provided or `DOTDROP_DEBUG` is set
+
+`DOTDROP_FORCE_NODEBUG`: disable debug output even if `-V`/`--verbose` is provided or `DOTDROP_DEBUG` is set
 ```bash
 export DOTDROP_FORCE_NODEBUG=
 ```
-* `DOTDROP_TMPDIR`: defines a temporary directory for dotdrop to use for its operations instead of using a system generated one
+
+`DOTDROP_TMPDIR`: defines a temporary directory for dotdrop to use for its operations instead of using a system generated one
 ```bash
 export DOTDROP_TMPDIR="/tmp/dotdrop-tmp"
 ```
-* `DOTDROP_WORKDIR`: overwrite the `workdir` defined in the config
+
+`DOTDROP_WORKDIR`: overwrite the `workdir` defined in the config
 ```bash
 export DOTDROP_WORKDIR="/tmp/dotdrop-workdir"
 ```
-* `DOTDROP_WORKERS`: overwrite the `-w --workers` cli argument
+
+`DOTDROP_WORKERS`: overwrite the `-w`/`--workers` cli argument
 ```bash
 export DOTDROP_WORKERS="10"
 ```
 
-## Ignore missing
-
-Sometimes, it is nice to have [`update`](#update-dotfiles) not copy all the files in the installed directory
-or [`compare`](#compare-dotfiles) diff them.
-
-For example,
-maybe you only want to include a single configuration file in your repository
-and don't want to include other files the program uses,
-such as a cache.
-Maybe you only want to change one file and don't want the others cluttering your repository.
-Maybe the program changes these files quite often and creates unnecessary diffs in your dotfiles.
-
-In these cases, you can use the [ingore-missing](config-format.md) option.
-This option is available as a flag (`--ignore-missing` or `-z`) to the `update` and `compare` commands,
-or [as a configuration option either globally or on a specific dotfile](config-format.md).
-
-To configure globally, place the following in `config.yaml`:
-```yaml
-config:
-  ignore_missing_in_dotdrop: true
-```
-
-To configure per dotfile:
-```yaml
-dotfiles:
-  f_abc:
-    ignore_missing_in_dotdrop: true
+`DOTDROP_MIME_TEXT`: comma separated list of mime type to treat as text during templating
+```bash
+export DOTDROP_MIME_TEXT=application/x-wine-extension-ini
 ```

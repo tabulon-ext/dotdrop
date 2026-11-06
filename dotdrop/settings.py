@@ -6,10 +6,12 @@ settings block
 """
 
 import os
+from dotdrop.exceptions import YamlException
 
 # local imports
 from dotdrop.linktypes import LinkTypes
 from dotdrop.dictparser import DictParser
+from dotdrop.utils import is_bin_in_path
 
 
 ENV_WORKDIR = 'DOTDROP_WORKDIR'
@@ -44,11 +46,21 @@ class Settings(DictParser):
     key_force_chmod = 'force_chmod'
     key_template_dotfile_default = 'template_dotfile_default'
     key_ignore_missing_in_dotdrop = 'ignore_missing_in_dotdrop'
+    key_chmod_on_import = 'chmod_on_import'
+    key_check_version = 'check_version'
+    key_clear_workdir = 'clear_workdir'
+    key_compare_workdir = 'compare_workdir'
+    key_key_prefix = 'key_prefix'
+    key_key_separator = 'key_separator'
+    key_prompt = 'prompt'
 
     # import keys
     key_import_actions = 'import_actions'
     key_import_configs = 'import_configs'
     key_import_variables = 'import_variables'
+
+    # defaults
+    default_diff_cmd = 'diff -r -u {0} {1}'
 
     def __init__(self, backup=True, banner=True,
                  create=True, default_actions=None, dotpath='dotfiles',
@@ -60,10 +72,13 @@ class Settings(DictParser):
                  impignore=None, workdir='~/.config/dotdrop',
                  showdiff=False, minversion=None,
                  func_file=None, filter_file=None,
-                 diff_command='diff -r -u {0} {1}',
+                 diff_command=default_diff_cmd,
                  template_dotfile_default=True,
                  ignore_missing_in_dotdrop=False,
-                 force_chmod=False):
+                 force_chmod=False, chmod_on_import=False,
+                 check_version=False, clear_workdir=False,
+                 compare_workdir=False, key_prefix=True,
+                 key_separator='_', prompt=False):
         self.backup = backup
         self.banner = banner
         self.create = create
@@ -92,6 +107,18 @@ class Settings(DictParser):
         self.template_dotfile_default = template_dotfile_default
         self.ignore_missing_in_dotdrop = ignore_missing_in_dotdrop
         self.force_chmod = force_chmod
+        self.chmod_on_import = chmod_on_import
+        self.check_version = check_version
+        self.clear_workdir = clear_workdir
+        self.compare_workdir = compare_workdir
+        self.key_prefix = key_prefix
+        self.key_separator = key_separator
+        self.prompt = prompt
+
+        # check diff command
+        if not is_bin_in_path(self.diff_command):
+            err = f'bad diff_command: {diff_command}'
+            raise YamlException(err)
 
     def _serialize_seq(self, name, dic):
         """serialize attribute 'name' into 'dic'"""
@@ -116,7 +143,14 @@ class Settings(DictParser):
             self.key_diff_command: self.diff_command,
             self.key_template_dotfile_default: self.template_dotfile_default,
             self.key_ignore_missing_in_dotdrop: self.ignore_missing_in_dotdrop,
-            self.key_force_chmod: self.force_chmod
+            self.key_force_chmod: self.force_chmod,
+            self.key_chmod_on_import: self.chmod_on_import,
+            self.key_check_version: self.check_version,
+            self.key_clear_workdir: self.clear_workdir,
+            self.key_compare_workdir: self.compare_workdir,
+            self.key_key_prefix: self.key_prefix,
+            self.key_key_separator: self.key_separator,
+            self.key_prompt: self.prompt,
         }
         self._serialize_seq(self.key_default_actions, dic)
         self._serialize_seq(self.key_import_actions, dic)

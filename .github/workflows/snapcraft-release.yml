@@ -2,24 +2,21 @@ name: Release to Snapcraft
 on:
   release:
     types: [created]
+  workflow_dispatch:
 jobs:
-  snapcraft_publish:
-    runs-on: ubuntu-16.04
+  build:
+    runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: Build and Publish Snapcraft
-      env:
-        SNAP_TOKEN: ${{ secrets.SNAPCRAFT_TOKEN }}
-        SNAPCRAFT_BUILD_ENVIRONMENT: host
-        RELEASE_TAG: ${{ github.ref }}
-      working-directory: ./packages/snap/
+    - uses: actions/checkout@v4
+    - name: snapcraft setup
       run: |
-        export MAGIC=$SNAP/usr/share/file/magic.mgc
-        sudo apt update
-        sudo apt -y install git pandoc python3-pip python3-setuptools
-        sudo pip3 install pypandoc
-        sudo snap install snapcraft --classic
-        echo "$SNAP_TOKEN" | snapcraft login --with -
-        snapcraft
-        version=$(echo ${RELEASE_TAG} | sed 's#^.*v##g')
-        snapcraft upload --release=stable dotdrop_${version}_amd64.snap
+        cp -r "${GITHUB_WORKSPACE}/packages/snap" "${GITHUB_WORKSPACE}"
+        sed -i 's#source: ../../#source: \.#g' "${GITHUB_WORKSPACE}/snap/snapcraft.yaml"
+    - uses: snapcore/action-build@v1
+      id: build
+    - uses: snapcore/action-publish@v1
+      env:
+        SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_LOGIN }}
+      with:
+        snap: ${{ steps.build.outputs.snap }}
+        release: stable

@@ -10,44 +10,76 @@ import shutil
 
 # local imports
 from dotdrop.logger import Logger
+from dotdrop.ftree import FTreeDir
 from dotdrop.utils import strip_home, get_default_file_perms, \
-    get_file_perm, get_umask, must_ignore
+    get_file_perm, get_umask, must_ignore, \
+    get_unique_tmp_name, removepath
 from dotdrop.linktypes import LinkTypes
 from dotdrop.comparator import Comparator
+from dotdrop.templategen import Templategen
+from dotdrop.exceptions import UndefinedException
 
 
 class Importer:
     """dotfile importer"""
 
     def __init__(self, profile, conf, dotpath, diff_cmd,
-                 dry=False, safe=True, debug=False,
-                 keepdot=True, ignore=None):
+                 variables, dry=False, safe=True, debug=False,
+                 keepdot=True, ignore=None, forcekey=None):
         """constructor
         @profile: the selected profile
-        @conf: configuration manager
+        @conf: configuration manager (CfgAggregator)
         @dotpath: dotfiles dotpath
         @diff_cmd: diff command to use
+        @variables: dictionary of variables for the templates
         @dry: simulate
         @safe: ask for overwrite if True
         @debug: enable debug
         @keepdot: keep dot prefix
         @ignore: patterns to ignore when importing
+        @forcekey: force the use of a specific dotfile key
+
+        This may raise UndefinedException
         """
         self.profile = profile
+        if not self.profile:
+            raise UndefinedException("profile is undefined")
         self.conf = conf
         self.dotpath = dotpath
         self.diff_cmd = diff_cmd
+        self.variables = variables
         self.dry = dry
         self.safe = safe
         self.debug = debug
         self.keepdot = keepdot
-        self.ignore = ignore or []
-
-        self.umask = get_umask()
+        self.ignore = []
+        self.forcekey = forcekey
         self.log = Logger(debug=self.debug)
 
+        # patch ignore patterns
+        if ignore:
+            for ign in ignore:
+                if ign.startswith('!'):
+                    self.ignore.append(ign)
+                    continue
+                if ign.startswith('*/'):
+                    self.ignore.append(ign)
+                    continue
+                newign = f'*/{ign}'
+                self.log.dbg(f'patching ignore {ign} to {newign}')
+                self.ignore.append(newign)
+
+        self.templater = Templategen(variables=self.variables,
+                                     base=self.dotpath,
+                                     debug=self.debug)
+
+        self.umask = get_umask()
+
     def import_path(self, path, import_as=None,
-                    import_link=LinkTypes.NOLINK, import_mode=False):
+                    import_link=LinkTypes.NOLINK,
+                    import_mode=False,
+                    trans_install="",
+                    trans_update=""):
         """
         import a dotfile pointed by path
         returns:
@@ -55,16 +87,31 @@ class Importer:
             0: ignored
             -1: error
         """
-        self.log.dbg('import {}'.format(path))
+        path = os.path.abspath(path)
+        self.log.dbg(f'import {path}')
         if not os.path.exists(path):
-            self.log.err('\"{}\" does not exist, ignored!'.format(path))
+            self.log.err(f'\"{path}\" does not exist, ignored!')
             return -1
 
+        # check trans_update if any
+        tinstall = None
+        tupdate = None
+        if trans_install:
+            tinstall = self.conf.get_trans_install(trans_install)
+        if trans_update:
+            tupdate = self.conf.get_trans_update(trans_update)
+
         return self._import(path, import_as=import_as,
-                            import_link=import_link, import_mode=import_mode)
+                            import_link=import_link,
+                            import_mode=import_mode,
+                            trans_update=tupdate,
+                            trans_install=tinstall)
 
     def _import(self, path, import_as=None,
-                import_link=LinkTypes.NOLINK, import_mode=False):
+                import_link=LinkTypes.NOLINK,
+                import_mode=False,
+                trans_install=None,
+                trans_update=None):
         """
         import path
         returns:
@@ -74,157 +121,179 @@ class Importer:
         """
 
         # normalize path
-        dst = path.rstrip(os.sep)
-        dst = os.path.abspath(dst)
+        infspath = path.rstrip(os.sep)
+        infspath = os.path.abspath(infspath)
 
         # test if must be ignored
-        if self._ignore(dst):
+        if self._ignore(infspath):
             return 0
 
         # ask confirmation for symlinks
         if self.safe:
-            realdst = os.path.realpath(dst)
-            if dst != realdst:
-                msg = '\"{}\" is a symlink, dereference it and continue?'
-                if not self.log.ask(msg.format(dst)):
+            realdst = os.path.realpath(infspath)
+            if infspath != realdst:
+                msg = f'\"{infspath}\" is a symlink, '
+                msg += 'dereference it and continue?'
+                if not self.log.ask(msg):
                     return 0
 
         # create src path
-        src = strip_home(dst)
+        indotpath = strip_home(infspath)
         if import_as:
             # handle import as
-            src = os.path.expanduser(import_as)
-            src = src.rstrip(os.sep)
-            src = os.path.abspath(src)
-            src = strip_home(src)
-            self.log.dbg('import src for {} as {}'.format(dst, src))
+            indotpath = os.path.expanduser(import_as)
+            indotpath = indotpath.rstrip(os.sep)
+            indotpath = os.path.abspath(indotpath)
+            indotpath = strip_home(indotpath)
+            self.log.dbg(f'import src for {infspath} as {indotpath}')
         # with or without dot prefix
         strip = '.' + os.sep
         if self.keepdot:
             strip = os.sep
-        src = src.lstrip(strip)
+        indotpath = indotpath.lstrip(strip)
 
         # get the permission
-        perm = get_file_perm(dst)
+        perm = get_file_perm(infspath)
 
         # get the link attribute
         linktype = import_link
         if linktype == LinkTypes.LINK_CHILDREN and \
                 not os.path.isdir(path):
-            self.log.err('importing \"{}\" failed!'.format(path))
+            self.log.err(f'importing \"{path}\" failed!')
             return -1
 
-        if self._already_exists(src, dst):
+        if self._already_exists(indotpath, infspath):
             return -1
 
-        self.log.dbg('import dotfile: src:{} dst:{}'.format(src, dst))
-
-        if not self._prepare_hierarchy(src, dst):
+        self.log.dbg(f'import dotfile: src:{indotpath} dst:{infspath}')
+        if not self._import_to_dotpath(indotpath,
+                                       infspath,
+                                       trans_update=trans_update):
+            self.log.dbg('import files failed')
             return -1
 
-        return self._import_it(path, src, dst, perm, linktype, import_mode)
+        return self._import_in_config(path, indotpath,
+                                      infspath, perm, linktype,
+                                      import_mode,
+                                      trans_update=trans_update,
+                                      trans_install=trans_install)
 
-    def _import_it(self, path, src, dst, perm, linktype, import_mode):
+    def _import_in_config(self, path, src, dst, perm,
+                          linktype, import_mode,
+                          trans_install=None,
+                          trans_update=None):
         """
         import path
         returns:
             1: 1 dotfile imported
             0: ignored
         """
-
         # handle file mode
         chmod = None
         dflperm = get_default_file_perms(dst, self.umask)
-        self.log.dbg('import mode: {}'.format(import_mode))
+        self.log.dbg(f'import chmod: {import_mode}')
         if import_mode or perm != dflperm:
-            msg = 'adopt mode {:o} (umask {:o})'
-            self.log.dbg(msg.format(perm, dflperm))
+            msg = f'adopt mode {perm:o} (umask {dflperm:o})'
+            self.log.dbg(msg)
             chmod = perm
 
         # add file to config file
-        retconf = self.conf.new_dotfile(src, dst, linktype, chmod=chmod)
+        retconf = self.conf.new_dotfile(src, dst, linktype, chmod=chmod,
+                                        trans_install=trans_install,
+                                        trans_update=trans_update,
+                                        forcekey=self.forcekey)
         if not retconf:
-            self.log.warn('\"{}\" ignored during import'.format(path))
+            self.log.warn(f'\"{path}\" ignored during import')
             return 0
 
-        self.log.sub('\"{}\" imported'.format(path))
+        self.log.sub(f'\"{path}\" imported')
         return 1
 
-    def _prepare_hier_when_exists(self, srcf, dst):
-        """a dotfile in dotpath already exists at that spot"""
-        if not os.path.exists(srcf):
+    def _check_existing_dotfile(self, src, dst):
+        """
+        check if a dotfile file in the dotpath
+        already exists for this src
+        """
+        if not os.path.exists(src):
             return True
         if not self.safe:
             return True
         cmp = Comparator(debug=self.debug,
                          diff_cmd=self.diff_cmd)
-        diff = cmp.compare(srcf, dst)
+        diff = cmp.compare(src, dst)
         if diff != '':
             # files are different, dunno what to do
-            self.log.log('diff \"{}\" VS \"{}\"'.format(dst, srcf))
+            self.log.log(f'diff \"{dst}\" VS \"{src}\"')
             self.log.emph(diff)
             # ask user
-            msg = 'Dotfile \"{}\" already exists, overwrite?'
-            if not self.log.ask(msg.format(srcf)):
+            msg = f'Dotfile \"{src}\" already exists, overwrite?'
+            if not self.log.ask(msg):
                 return False
             self.log.dbg('will overwrite existing file')
         return True
 
-    def _prepare_hierarchy(self, src, dst):
-        """prepare hierarchy for dotfile"""
-        srcf = os.path.join(self.dotpath, src)
-        srcfd = os.path.dirname(srcf)
-        if self._ignore(srcf) or self._ignore(srcfd):
+    def _import_to_dotpath(self, in_dotpath, in_fs, trans_update=None):
+        """
+        copy files to dotpath
+        """
+        in_dotpath_abs = os.path.join(self.dotpath, in_dotpath)
+
+        # check we are not overwritting
+        if not self._check_existing_dotfile(in_dotpath_abs, in_fs):
+            self.log.dbg(f'{in_dotpath_abs} exits already')
             return False
 
-        if not self._prepare_hier_when_exists(srcf, dst):
+        # import the file
+        if self.dry:
+            self.log.dry(f'would copy {in_fs} to {in_dotpath_abs}')
+            return True
+
+        # apply trans_update
+        in_fs = self._apply_trans_update(in_fs, trans_update)
+        if not in_fs:
+            # transformation failed
+            self.log.dbg(f"trans failed: {in_fs}")
             return False
 
-        # create directory hierarchy
-        if self.dry:
-            cmd = 'mkdir -p {}'.format(srcfd)
-            self.log.dry('would run: {}'.format(cmd))
-        else:
-            try:
-                os.makedirs(srcfd, exist_ok=True)
-            except OSError:
-                self.log.err('importing \"{}\" failed!'.format(dst))
-                return False
+        if not os.path.isdir(in_fs):
+            # handle file
+            self._import_file_to_dotpath(in_fs, in_dotpath_abs)
 
-        if self.dry:
-            self.log.dry('would copy {} to {}'.format(dst, srcf))
-        else:
-            # copy the file to the dotpath
-            try:
-                if os.path.isdir(dst):
-                    if os.path.exists(srcf):
-                        shutil.rmtree(srcf)
-                    ign = shutil.ignore_patterns(*self.ignore)
-                    shutil.copytree(dst, srcf,
-                                    copy_function=self._cp,
-                                    ignore=ign)
-                else:
-                    shutil.copy2(dst, srcf)
-            except shutil.Error as exc:
-                src = exc.args[0][0][0]
-                why = exc.args[0][0][2]
-                self.log.err('importing \"{}\" failed: {}'.format(src, why))
+        # handle dir and get a list of all files to import
+        fstree = FTreeDir(in_fs,
+                          ignores=self.ignore,
+                          debug=self.debug)
 
+        self.log.dbg(f'{len(fstree.get_entries())} files to import')
+        for entry in fstree.get_entries():
+            self.log.dbg(f"importing {entry}...")
+            src = os.path.join(in_fs, entry)
+            rel_src = os.path.relpath(entry, in_fs)
+            dst = os.path.join(in_dotpath_abs, rel_src)
+            if os.path.isdir(src):
+                # we do not care about directory
+                # these are created based on files
+                continue
+            self._import_file_to_dotpath(src, dst)
+
+        return os.path.exists(in_dotpath_abs)
+
+    def _import_file_to_dotpath(self, src, dst):
+        self.log.dbg(f'importing {src} to {dst}')
+        try:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+        except IOError as exc:
+            self.log.err(f'importing \"{src}\" failed: {exc}')
+            return False
         return True
-
-    def _cp(self, src, dst):
-        """the copy function for copytree"""
-        # test if must be ignored
-        if self._ignore(src):
-            return
-        shutil.copy2(src, dst)
 
     def _already_exists(self, src, dst):
         """
         test no other dotfile exists with same
         dst for this profile but different src
         """
-        dfs = self.conf.get_dotfile_by_dst(dst)
+        dfs = self.conf.get_dotfile_by_dst(dst, profile_key=self.profile)
         if not dfs:
             return False
         for dotfile in dfs:
@@ -234,13 +303,36 @@ class Importer:
                     not self.conf.get_dotfile_by_src_dst(src, dst):
                 # same profile
                 # different src
-                self.log.err('duplicate dotfile for this profile')
+                msg = f'duplicate dotfile: {dotfile.key}'
+                self.log.err(msg)
                 return True
         return False
 
     def _ignore(self, path):
         if must_ignore([path], self.ignore, debug=self.debug):
-            self.log.dbg('ignoring import of {}'.format(path))
-            self.log.warn('{} ignored'.format(path))
+            self.log.dbg(f'ignoring import of {path}')
+            self.log.warn(f'{path} ignored')
             return True
         return False
+
+    def _apply_trans_update(self, path, trans):
+        """
+        apply transformation to path on filesystem)
+        returns
+        - the new path (tmp file) if trans
+        - original path if no trans
+        - None/empty string if error
+        """
+        if not trans:
+            return path
+        self.log.dbg(f'executing write transformation {trans}')
+        tmp = get_unique_tmp_name()
+        if not trans.transform(path, tmp, debug=self.debug,
+                               templater=self.templater):
+            msg = f'transformation \"{trans.key}\" failed for {path}'
+            self.log.err(msg)
+            if os.path.exists(tmp):
+                # ignore error
+                removepath(tmp, logger=self.log)
+            return None
+        return tmp

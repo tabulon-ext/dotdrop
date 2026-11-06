@@ -2,26 +2,25 @@ name: Release to PyPI
 on:
   release:
     types: [created]
+  workflow_dispatch:
 jobs:
   pypi_publish:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    - name: Set up Python 3.8
-      uses: actions/setup-python@v2
+    - uses: actions/checkout@v4
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
       with:
-        python-version: 3.8
+        python-version: '3.10'
     - name: Install Tools
       run: |
-        sudo apt update
-        sudo apt -y install python3-pypandoc pandoc
         python -m pip install --upgrade pip
-        pip install setuptools wheel twine pypandoc
+        pip install build packaging setuptools wheel twine
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
     - name: Build and Publish
       env:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
       run: |
-        python setup.py sdist bdist_wheel
+        python3 -m build --no-isolation
         twine upload dist/*

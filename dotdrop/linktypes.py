@@ -16,6 +16,8 @@ class LinkTypes(IntEnum):
     NOLINK = 0
     LINK = 1
     LINK_CHILDREN = 2
+    ABSOLUTE = 3
+    RELATIVE = 4
 
     @classmethod
     def get(cls, key, default=None):
@@ -23,9 +25,9 @@ class LinkTypes(IntEnum):
         try:
             return key if isinstance(key, cls) else cls[key.upper()]
         except KeyError as exc:
-            if default:
+            if default and isinstance(default, cls):
                 return default
-            err = 'bad {} value: "{}"'.format(cls.__name__, key)
+            err = f'bad {cls.__name__} value: "{key}"'
             raise ValueError(err) from exc
 
     def __str__(self):

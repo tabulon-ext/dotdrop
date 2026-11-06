@@ -1,119 +1,107 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # author: deadc0de6 (https://github.com/deadc0de6)
 # Copyright (c) 2017, deadc0de6
 
 # stop on first error
-#set -ev
-set -e
+set -eu -o errtrace -o pipefail
 
-# PEP8 tests
-which pycodestyle >/dev/null 2>&1
-[ "$?" != "0" ] && echo "Install pycodestyle" && exit 1
-echo "testing with pycodestyle"
-pycodestyle --ignore=W503,W504,W605 dotdrop/
-pycodestyle tests/
-pycodestyle scripts/
+cur=$(cd "$(dirname "${0}")" && pwd)
+in_cicd="${GITHUB_ACTIONS:-}"
 
-# pyflakes tests
-echo "testing with pyflakes"
-pyflakes dotdrop/
-pyflakes tests/
+MULTI_PYTHON="" # set to test multi python envs
+PYTHON_VERSIONS=("3.6" "3.7" "3.8" "3.9" "3.10" "3.11" "3.12" "3.13" "3.14")
 
-# pylint
-echo "testing with pylint"
-pylint \
-  --disable=R0902 \
-  --disable=R0913 \
-  --disable=R0903 \
-  --disable=R0914 \
-  --disable=R0915 \
-  --disable=R0912 \
-  --disable=R0911 \
-  --disable=R1732 \
-  dotdrop/
+test()
+{
+  echo "=> python version:"
+  python3 --version
 
-# retrieve the nosetests binary
-nosebin="nosetests"
-which ${nosebin} >/dev/null 2>&1
-[ "$?" != "0" ] && nosebin="nosetests3"
-which ${nosebin} >/dev/null 2>&1
-[ "$?" != "0" ] && echo "Install nosetests" && exit 1
+  # test syntax
+  echo "checking syntax..."
+  "${cur}"/scripts/check-syntax.sh
 
-# do not print debugs when running tests (faster)
-export DOTDROP_FORCE_NODEBUG=yes
+  # unittest
+  echo "unittest..."
+  "${cur}"/scripts/check-unittests.sh
 
-# coverage file location
-cur=`dirname $(readlink -f "${0}")`
+  # tests-ng
+  if [ -n "${in_cicd}" ]; then
+    # in CI/CD
+    export DOTDROP_WORKERS=1
+    echo "tests-ng with ${DOTDROP_WORKERS} worker(s)..."
+    "${cur}"/scripts/check-tests-ng.sh
 
-workers=${DOTDROP_WORKERS}
-if [ ! -z ${workers} ]; then
-  unset DOTDROP_WORKERS
-  echo "DISABLE workers"
+    export DOTDROP_WORKERS=4
+    echo "tests-ng with ${DOTDROP_WORKERS} worker(s)..."
+    "${cur}"/scripts/check-tests-ng.sh
+  else
+    echo "tests-ng..."
+    "${cur}"/scripts/check-tests-ng.sh
+  fi
+}
+
+if [ -n "${in_cicd}" ]; then
+  # patch TERM var in ci/cd
+  if [ -z "${TERM}" ]; then
+    export TERM="linux"
+  fi
 fi
 
-# execute tests with coverage
-if [ -z ${GITHUB_WORKFLOW} ]; then
-  ## local
-  export COVERAGE_FILE=
-  PYTHONPATH="dotdrop" ${nosebin} -s --processes=-1 --with-coverage --cover-package=dotdrop
-  #export DOTDROP_DEBUG=yes
-  #unset DOTDROP_FORCE_NODEBUG
+# make sure both version.py and manpage dotdrop.1 are in sync
+dotdrop_version=$(grep version dotdrop/version.py | sed 's/^.*= .\(.*\).$/\1/g')
+man_version=$(grep '^\.TH' manpage/dotdrop.1  | sed 's/^.*"dotdrop-\(.*\)\" "Save your.*$/\1/g')
+if [ "${dotdrop_version}" != "${man_version}" ]; then
+  echo "ERROR version.py (${dotdrop_version}) and manpage (${man_version}) differ!"
+  exit 1
+fi
+echo "current dotdrop version ${dotdrop_version}"
+
+if [ -n "${in_cicd}" ]; then
+  test
 else
-  ## CI/CD
-  export COVERAGE_FILE="${cur}/.coverage"
-  PYTHONPATH="dotdrop" ${nosebin} --processes=0 --with-coverage --cover-package=dotdrop
-  #unset DOTDROP_DEBUG=
-  #export DOTDROP_FORCE_NODEBUG=yes
-fi
-#PYTHONPATH="dotdrop" python3 -m pytest tests
+  if [ -n "${MULTI_PYTHON}" ]; then
+    if ! hash pyenv &>/dev/null; then
+      echo "install pyenv"
+      exit 1
+    fi
 
-# disable debug logs
-unset DOTDROP_DEBUG=
-export DOTDROP_FORCE_NODEBUG=yes
-
-export DOTDROP_WORKDIR=/tmp/dotdrop-tests-workdir
-
-if [ ! -z ${workers} ]; then
-  DOTDROP_WORKERS=${workers}
-  echo "ENABLE workers: ${workers}"
-fi
-
-# run bash tests
-if [ -z ${GITHUB_WORKFLOW} ]; then
-  ## local
-  export COVERAGE_FILE=
-  tests-ng/tests-launcher.py
-else
-  ## CI/CD
-  export COVERAGE_FILE="${cur}/.coverage"
-  tests-ng/tests-launcher.py 1
-fi
-
-## test the doc with remark
-## https://github.com/remarkjs/remark-validate-links
-set +e
-which remark >/dev/null 2>&1
-r="$?"
-set -e
-if [ "$r" != "0" ]; then
-  echo "[WARNING] install \"remark\" to test the doc"
-else
-  remark -f -u validate-links docs/
-  remark -f -u validate-links *.md
+    eval "$(pyenv init -)"
+    for PY in "${PYTHON_VERSIONS[@]}"; do
+        echo "============== python ${PY} =============="
+        pyenv install -s "${PY}"
+        pyenv shell "${PY}"
+        python -m venv ".venv"
+        # shellcheck disable=SC1091
+        source ".venv/bin/activate"
+        pip install pip --upgrade
+        pip install -r requirements.txt
+        pip install -r tests-requirements.txt
+        test
+        deactivate
+    done
+  else
+    python3 -m venv ".venv"
+    # shellcheck disable=SC1091
+    source ".venv/bin/activate"
+    pip install pip --upgrade
+    pip install -r requirements.txt
+    pip install -r tests-requirements.txt
+    test
+    deactivate
+  fi
 fi
 
-### test the doc with markdown-link-check
-### https://github.com/tcort/markdown-link-check
-#set +e
-#which markdown-link-check >/dev/null 2>&1
-#r="$?"
-#set -e
-#if [ "$r" != "0" ]; then
-#  echo "[WARNING] install \"markdown-link-check\" to test the doc"
-#else
-#  for i in `find docs -iname '*.md'`; do markdown-link-check $i; done
-#  markdown-link-check README.md
-#fi
+
+# merge coverage
+coverage combine coverages/*
+coverage xml
+
+# test doc
+if [ -z "${in_cicd}" ]; then
+  # not in CI/CD
+  echo "checking documentation..."
+  "${cur}"/scripts/check-doc.sh
+fi
 
 ## done
-echo "All test finished successfully"
+echo "All tests finished successfully"

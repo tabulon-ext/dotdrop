@@ -6,97 +6,82 @@
 # returns 1 in case of error
 #
 
-# exit on first error
-set -e
-
-# all this crap to get current path
-rl="readlink -f"
-if ! ${rl} "${0}" >/dev/null 2>&1; then
-  rl="realpath"
-
-  if ! hash ${rl}; then
-    echo "\"${rl}\" not found !" && exit 1
-  fi
-fi
-cur=$(dirname "$(${rl} "${0}")")
-
-#hash dotdrop >/dev/null 2>&1
-#[ "$?" != "0" ] && echo "install dotdrop to run tests" && exit 1
-
-#echo "called with ${1}"
-
-# dotdrop path can be pass as argument
+## start-cookie
+set -eu -o errtrace -o pipefail
+cur=$(cd "$(dirname "${0}")" && pwd)
 ddpath="${cur}/../"
-[ "${1}" != "" ] && ddpath="${1}"
-[ ! -d ${ddpath} ] && echo "ddpath \"${ddpath}\" is not a directory" && exit 1
-
-export PYTHONPATH="${ddpath}:${PYTHONPATH}"
-bin="python3 -m dotdrop.dotdrop"
-hash coverage 2>/dev/null && bin="coverage run -a --source=dotdrop -m dotdrop.dotdrop" || true
-
-echo "dotdrop path: ${ddpath}"
-echo "pythonpath: ${PYTHONPATH}"
-
-# get the helpers
-source ${cur}/helpers
-
-echo -e "$(tput setaf 6)==> RUNNING $(basename $BASH_SOURCE) <==$(tput sgr0)"
+PPATH="{PYTHONPATH:-}"
+export PYTHONPATH="${ddpath}:${PPATH}"
+altbin="python3 -m dotdrop.dotdrop"
+if hash coverage 2>/dev/null; then
+  mkdir -p coverages/
+  altbin="coverage run -p --data-file coverages/coverage --source=dotdrop -m dotdrop.dotdrop"
+fi
+bin="${DT_BIN:-${altbin}}"
+# shellcheck source=tests-ng/helpers
+source "${cur}"/helpers
+echo -e "$(tput setaf 6)==> RUNNING $(basename "${BASH_SOURCE[0]}") <==$(tput sgr0)"
+## end-cookie
 
 ################################################################
 # this is the test
 ################################################################
 
 # dotdrop directory
-basedir=`mktemp -d --suffix='-dotdrop-tests' || mktemp -d`
+basedir=$(mktemp -d --suffix='-dotdrop-tests' || mktemp -d)
 echo "[+] dotdrop dir: ${basedir}"
 echo "[+] dotpath dir: ${basedir}/dotfiles"
 
 # the dotfile directory to be imported
-tmpd=`mktemp -d --suffix='-dotdrop-tests' || mktemp -d`
+tmpd=$(mktemp -d --suffix='-dotdrop-tests' || mktemp -d)
 # the dotfile file to be imported
-tmpf=`mktemp`
+tmpf=$(mktemp)
+
+clear_on_exit "${basedir}"
+clear_on_exit "${tmpd}"
 
 # single file
-echo 'file' > ${tmpf}
+echo 'file' > "${tmpf}"
 
-mkdir ${tmpd}/dir1
-echo 'dir1file1' > ${tmpd}/dir1/file1
-echo 'dir1file2' > ${tmpd}/dir1/file2
+mkdir "${tmpd}"/dir1
+echo 'dir1file1' > "${tmpd}"/dir1/file1
+echo 'dir1file2' > "${tmpd}"/dir1/file2
 
 # create the config file
 cfg="${basedir}/config.yaml"
-create_conf ${cfg} # sets token
+create_conf "${cfg}" # sets token
 
 # import dir1
 echo "[+] import"
-cd ${ddpath} | ${bin} import -c ${cfg} ${tmpd}
-cd ${ddpath} | ${bin} import -c ${cfg} ${tmpf}
+cd "${ddpath}" | ${bin} import -f -c "${cfg}" "${tmpd}"
+cd "${ddpath}" | ${bin} import -f -c "${cfg}" "${tmpf}"
 
 # change file
-chmod +x ${tmpf}
+chmod +x "${tmpf}"
 
 # update
-echo "[+] updating"
-cd ${ddpath} | ${bin} update -c ${cfg} -f --verbose ${tmpf}
+echo "[+] updating (1)"
+cd "${ddpath}" | ${bin} update -c "${cfg}" -f --verbose "${tmpf}"
 
 # test change applied
-[ "`stat -c '%a' ${tmpf}`" != "`stat -c '%a' ${basedir}/dotfiles/${tmpf}`" ] && exit 1
+[ "$(stat -c '%a' "${tmpf}")" != "$(stat -c '%a' "${basedir}"/dotfiles/"${tmpf}")" ] && exit 1
 
 # change file
-chmod +x ${tmpd}/dir1/file2
-echo 'test' > ${tmpd}/dir1/newfile
-chmod +x ${tmpd}/dir1/newfile
+chmod +x "${tmpd}"/dir1/file2
+echo 'test' > "${tmpd}"/dir1/newfile
+chmod +x "${tmpd}"/dir1/newfile
 
 # update
-echo "[+] updating"
-cd ${ddpath} | ${bin} update -c ${cfg} -f --verbose ${tmpd}
+echo "[+] updating (2)"
+cd "${ddpath}" | ${bin} update -c "${cfg}" -f --verbose "${tmpd}"
 
 # test change applied
-[ "`stat -c '%a' ${tmpd}/dir1/newfile`" != "`stat -c '%a' ${basedir}/dotfiles/${tmpd}/dir1/newfile`" ] && exit 1
-[ "`stat -c '%a' ${tmpd}/dir1/file2`" != "`stat -c '%a' ${basedir}/dotfiles/${tmpd}/dir1/file2`" ] && exit 1
-
-## CLEANING
-rm -rf ${basedir} ${tmpd}
+stat1=$(stat -c '%a' "${tmpd}"/dir1/newfile)
+stat2=$(stat -c '%a' "${basedir}"/dotfiles/"${tmpd}"/dir1/newfile)
+[ "${stat1}" != "${stat2}" ] && echo "diff permissions for newfile: ${stat1} VS ${stat2}" && exit 1
+stat1=$(stat -c '%a' "${tmpd}"/dir1/file2)
+stat2=$(stat -c '%a' "${basedir}"/dotfiles/"${tmpd}"/dir1/file2)
+[ "${stat1}" != "${stat2}" ] && echo "diff permissions for file2: ${stat1} VS ${stat2}" && exit 1
 
 echo "OK"
 exit 0
